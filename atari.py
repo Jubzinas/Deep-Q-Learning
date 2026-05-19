@@ -61,7 +61,7 @@ class Args:
     env_id: str = "ALE/Breakout-v5" #the id of the environment
     total_timesteps: int = 1500000 #total timesteps of the experiments
     learning_rate: float = 1e-4 #the learning rate of the optimizer
-    num_envs: int = 1 #the number of parallel game environments
+    num_envs: int = 2 #the number of parallel game environments
     buffer_size: int = 300000 #the replay memory buffer size
     gamma: float = 0.99 #the discount factor gamma
     tau: float = 1.0 #the target network update rate
@@ -151,7 +151,7 @@ if __name__ == "__main__":
         print(f"[{label}] avg={avg:.2f} | returns={[round(r,1) for r in returns]}")
         print("eval/avg_return", avg, global_step)
         return returns
-    assert args.num_envs == 1, "vectorized envs are not supported at the moment"
+    print('n envs: ', args.num_envs)
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
 
     random.seed(args.seed)
@@ -175,12 +175,13 @@ if __name__ == "__main__":
     target_network.load_state_dict(q_network.state_dict())
 
     rb = buffer.ReplayBuffer(
-        args.buffer_size,
-        envs.single_observation_space,
-        envs.single_action_space,
-        device,
-        optimize_memory_usage=True,
-        handle_timeout_termination=False,
+    args.buffer_size,
+    envs.single_observation_space,
+    envs.single_action_space,
+    device,
+    n_envs=args.num_envs,          # ← add this line
+    optimize_memory_usage=True,
+    handle_timeout_termination=False,
     )
     start_time = time.time()
 
