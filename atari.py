@@ -179,7 +179,7 @@ if __name__ == "__main__":
     envs.single_observation_space,
     envs.single_action_space,
     device,
-    n_envs=args.num_envs,          # ← add this line
+    n_envs=args.num_envs,  
     optimize_memory_usage=True,
     handle_timeout_termination=False,
     )
