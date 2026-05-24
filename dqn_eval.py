@@ -4,6 +4,7 @@ from typing import Callable
 import gymnasium as gym
 import numpy as np
 import torch
+import os
 
 
 def evaluate(
@@ -64,3 +65,24 @@ def evaluate(
 
     envs.close()
     return episodic_returns
+
+def save_and_eval(label: str, eval_episodes: int, exp_name: str, run_name: str, q_network, make_env, device, env_id: str, Model: torch.nn.Module, end_e: float, capture_video: bool, global_step):
+        ckpt_path = f"runs/{run_name}/{exp_name}.cleanrl_model_{label}"
+        os.makedirs(f"runs/{run_name}", exist_ok=True)
+        torch.save(q_network.state_dict(), ckpt_path)
+        print(f"\n--- Evaluation: {label} ---")
+        returns = evaluate(
+            ckpt_path,
+            make_env,
+            env_id,
+            eval_episodes= eval_episodes,
+            run_name=f"{run_name}",
+            Model=Model,
+            device=device,
+            epsilon=end_e,
+            capture_video=capture_video,
+            video_name_prefix = label
+        )
+        avg = np.mean(returns)
+        print(f"[{label}] avg={avg:.2f} | returns={[round(r,1) for r in returns]}", " | eval/avg_return", avg, global_step)
+        return returns

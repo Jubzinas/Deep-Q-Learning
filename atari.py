@@ -17,7 +17,7 @@ import tyro
 import ale_py
 from torch.utils.tensorboard import SummaryWriter
 import buffer
-from dqn_eval import evaluate
+from dqn_eval import save_and_eval
 import helper
 
 gym.register_envs(ale_py)
@@ -29,18 +29,6 @@ from atari_wrappers import (
     MaxAndSkipEnv,
     NoopResetEnv,
 )
-
-def smooth(y, w=10):
-    y = np.array(y)
-    if len(y) < w:
-        return y
-    return np.convolve(y, np.ones(w)/w, mode='valid')
-
-def smoothed_steps(steps, w=10):
-    steps = np.array(steps)
-    if len(steps) < w:
-        return steps
-    return steps[w-1:]
 
 @dataclass
 class Args:
@@ -56,10 +44,16 @@ class Args:
     upload_model: bool = False #whether to upload the saved model to huggingface
     hf_entity: str = "" #the user or org name of the model repository from the Hugging Face Hub
     log_frequency: int = 500 
+    eval_frequency: int = 20000
+    get_existing_model: bool = True
+    existing_model_path: str = None
+    eval_episodes: int = 5
+    plot_training_curves: bool = True
+    plot_training_curves_frequency: int = 10000
 
     # Algorithm specific arguments
     env_id: str = "ALE/Breakout-v5" #the id of the environment
-    total_timesteps: int = 1500000 #total timesteps of the experiments
+    total_timesteps: int = 5000000 #total timesteps of the experiments
     learning_rate: float = 1e-4 #the learning rate of the optimizer
     num_envs: int = 2 #the number of parallel game environments
     buffer_size: int = 300000 #the replay memory buffer size
@@ -70,20 +64,15 @@ class Args:
     start_e: float = 1 #the starting epsilon for exploration
     end_e: float = 0.01 #the ending epsilon for exploration
     exploration_fraction: float = 0.10 #the fraction of `total-timesteps` it takes from start-e to go end-e
-    learning_starts: int = 80000 #timestep to start learning
+    learning_starts: int = 5000 #timestep to start learning
     train_frequency: int = 4 #the frequency of training
 
 
 def make_env(env_id, seed, idx, capture_video, run_name, eval_episodes=None, is_eval=False, video_name_prefix = None):
     def thunk():
-        if capture_video and idx == 0:
+        if capture_video and idx == 0 and eval_episodes is not None and is_eval:
             env = gym.make(env_id, render_mode="rgb_array")
-            if eval_episodes is not None:
-                mid, last = eval_episodes // 2, eval_episodes - 1
-                trigger_set = {0, mid, last}
-                env = gym.wrappers.RecordVideo(env, f"videos/{run_name}", episode_trigger=lambda ep: ep in trigger_set, disable_logger=True, name_prefix=video_name_prefix)
-            else:
-                env = gym.wrappers.RecordVideo(env, f"videos/{run_name}", episode_trigger=lambda ep: ep == 0, disable_logger=True)
+            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}", episode_trigger=lambda ep: ep == 0, disable_logger=True, name_prefix=video_name_prefix)
         else:
             env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -117,41 +106,15 @@ class QNetwork(nn.Module):
             nn.ReLU(),
             nn.Linear(512, env.single_action_space.n),
         )
-
     def forward(self, x):
         return self.network(x / 255.0)
-
-
+    
 def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     slope = (end_e - start_e) / duration
     return max(slope * t + start_e, end_e)
 
-
 if __name__ == "__main__":
     args = tyro.cli(Args)
-    
-    def save_and_eval(label: str):
-        ckpt_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model_{label}"
-        os.makedirs(f"runs/{run_name}", exist_ok=True)
-        torch.save(q_network.state_dict(), ckpt_path)
-        print(f"\n--- Evaluation: {label} ---")
-        returns = evaluate(
-            ckpt_path,
-            make_env,
-            args.env_id,
-            eval_episodes=5,
-            run_name=f"{run_name}",
-            Model=QNetwork,
-            device=device,
-            epsilon=args.end_e,
-            capture_video=args.capture_video,
-            video_name_prefix = label
-        )
-        avg = np.mean(returns)
-        print(f"[{label}] avg={avg:.2f} | returns={[round(r,1) for r in returns]}")
-        print("eval/avg_return", avg, global_step)
-        return returns
-    print('n envs: ', args.num_envs)
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
 
     random.seed(args.seed)
@@ -162,17 +125,27 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else 
                           "mps" if torch.backends.mps.is_available() else "cpu"
     )
-    print('using ', device, ' device')
+    print('using device: ', device, ' | torch version ', torch.__version__, ' | gym version ', gym.__version__, ' | n_envs: ', args.num_envs)
 
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name, args.total_timesteps, video_name_prefix = "before") for i in range(args.num_envs)]
+        [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name, args.total_timesteps) for i in range(args.num_envs)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    print('using device: ', device, ' | torch version ', torch.__version__, ' | gym version ', gym.__version__, ' | n_envs: ', args.num_envs, ' | action space: ', envs.single_action_space, ' | observation space: ', envs.single_observation_space)
 
-    q_network = QNetwork(envs).to(device)
-    optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
-    target_network = QNetwork(envs).to(device)
-    target_network.load_state_dict(q_network.state_dict())
+    if args.get_existing_model:
+        q_network = QNetwork(envs).to(device)
+        checkpoint = torch.load(args.existing_model_path, map_location=device)
+        q_network.load_state_dict(checkpoint)
+        target_network = QNetwork(envs).to(device)
+        target_network.load_state_dict(q_network.state_dict())
+        q_network.train()
+        optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
+    else:
+        q_network = QNetwork(envs).to(device)
+        target_network = QNetwork(envs).to(device)
+        target_network.load_state_dict(q_network.state_dict())
+        optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
 
     rb = buffer.ReplayBuffer(
     args.buffer_size,
@@ -186,16 +159,11 @@ if __name__ == "__main__":
     start_time = time.time()
 
     obs, _ = envs.reset(seed=args.seed)
-    mid_step = args.total_timesteps // 2
-    eval_mid = False
     loss_history, q_history, step_history = [], [], []
     pbar = tqdm(range(args.total_timesteps), desc="Training", unit="step")
     for global_step in pbar:
-        if global_step == 0:
-           save_and_eval("before")
-        if global_step >= mid_step and not eval_mid:
-            eval_mid = True
-            save_and_eval("mid")
+        if global_step % args.eval_frequency == 0:
+            save_and_eval(f"model_trained_for_{global_step}_steps", args.eval_episodes, args.exp_name, run_name, q_network, make_env, device, args.env_id, QNetwork, args.end_e, args.capture_video, global_step)
 
         epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, global_step)
         if random.random() < epsilon:
@@ -206,14 +174,6 @@ if __name__ == "__main__":
 
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
-        if "final_info" in infos:
-            for info in infos["final_info"]:
-                if info and "episode" in info:
-                    print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                    print("charts/episodic_return", info["episode"]["r"], global_step)
-                    print("charts/episodic_length", info["episode"]["l"], global_step)
-
-        # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
         for idx, trunc in enumerate(truncations):
             if trunc:
@@ -251,36 +211,21 @@ if __name__ == "__main__":
                         f"ETA={eta_min}m{eta_sec:02d}s"
                     )
 
-                # optimize the model
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
-            # update target network
             if global_step % args.target_network_frequency == 0:
                 for target_network_param, q_network_param in zip(target_network.parameters(), q_network.parameters()):
                     target_network_param.data.copy_(
                         args.tau * q_network_param.data + (1.0 - args.tau) * target_network_param.data
                     )
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-    fig.suptitle(f"Training Curves — {args.env_id} ({args.total_timesteps:,} steps)", fontsize=13)
-
-    # smooth helper
-    def smooth(y, w=50):
-        if len(y) < w:
-            return y
-        return np.convolve(y, np.ones(w)/w, mode='valid')
-
-    #s = step_history[49:]  # align after smoothing
-    #w = 10
-
-    helper.plot_training_curves(loss_history, q_history, step_history, run_name, args.env_id, args.total_timesteps)
+        if args.plot_training_curves and global_step % args.plot_training_curves_frequency == 0:
+            helper.plot_training_curves(loss_history, q_history, step_history, run_name, args.env_id, args.total_timesteps)
     if args.save_model:
         save_and_eval("end")
         model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
         torch.save(q_network.state_dict(), model_path)
         print(f"model saved to {model_path}")
-        from dqn_eval import evaluate
 
     envs.close()
