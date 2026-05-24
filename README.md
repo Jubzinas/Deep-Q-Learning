@@ -4,6 +4,26 @@ A clean implementation of **vanilla DQN** (Mnih et al., 2015) trained on Atari g
 
 ---
 
+## Results
+
+The model included in this repo was trained for **5 million steps** on `ALE/Breakout-v5`. While it has clearly learned to play — breaking bricks and surviving longer episodes — this is far from the full capability of DQN on Breakout. The original Nature paper and most published benchmarks train for **50 million frames** to reach expert-level performance (scores of 400+). At 5M steps the agent is in an intermediate stage: it shows purposeful behavior but still misses many bricks and loses lives unnecessarily.
+
+> To reproduce strong results, set `--total_timesteps 50000000` and use a machine with a GPU.
+
+### Before training (random policy)
+
+The agent takes random actions and scores close to 0.
+
+![Before training](assets/before_training.gif)
+
+### After 5M steps
+
+The agent has learned to aim the ball and clear rows, but performance is still sub-optimal.
+
+![After 5M steps](assets/after_training.gif)
+
+---
+
 ## Overview
 
 This project implements the original **Nature DQN** with:
@@ -158,25 +178,6 @@ Loss: MSE between $y$ and $Q_\theta(s, a)$.
 
 Device is selected automatically: CUDA → MPS → CPU.
 
----
-
-## Results
-
-The model included in this repo was trained for **5 million steps** on `ALE/Breakout-v5`. While it has clearly learned to play — breaking bricks and surviving longer episodes — this is far from the full capability of DQN on Breakout. The original Nature paper and most published benchmarks train for **50 million frames** to reach expert-level performance (scores of 400+). At 5M steps the agent is in an intermediate stage: it shows purposeful behavior but still misses many bricks and loses lives unnecessarily.
-
-> To reproduce strong results, set `--total_timesteps 50000000` and use a machine with a GPU.
-
-### Before training (random policy)
-
-The agent takes random actions and scores close to 0.
-
-![Before training](assets/before_training.gif)
-
-### After 5M steps
-
-The agent has learned to aim the ball and clear rows, but performance is still sub-optimal.
-
-![After 5M steps](assets/after_training.gif)
 
 ---
 
